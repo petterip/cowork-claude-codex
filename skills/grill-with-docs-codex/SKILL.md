@@ -172,6 +172,8 @@ codex exec resume "$THREAD_ID" -c sandbox_mode="read-only" --json \
 ```
 The `< /dev/null` redirect is required on the resume call too — same non-interactive stdin hang as Round 1.
 
+**Timeout guard (both rounds):** run every `codex exec` / `codex exec resume` with a 10-minute ceiling so any future stall fails loud instead of hanging silently. Via Claude Code's Bash tool, pass `timeout: 600000` on the tool call (the default 2-minute tool timeout is too short for real reviews and would kill them mid-run). In a plain shell, prefix the command with `timeout 600` (Linux / Git Bash) or `gtimeout 600` (macOS via coreutils — stock macOS has no `timeout`). If the ceiling trips, treat it as a failed run: stop and tell the user rather than retrying blind.
+
 ### Each round
 1. Read verdict file; append `## Round <n> — Codex` + critique to `LOG_FILE`.
 2. Last line verdict: `APPROVED` → Resolution (converged); `REVISE` → Claude decides what's worth acting on (final arbiter), revise `PLAN_FILE`, append `### Claude's response` (what changed/rejected + why), increment.
