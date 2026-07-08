@@ -140,6 +140,7 @@ Hand the locked plan to Codex for adversarial review. Mechanics verified end-to-
 - `codex --version` ≥ 0.130 (older CLIs error on the default `gpt-5.5` model).
 - Codex authenticated (`codex login`; ChatGPT account fine). On auth/model error, surface it — don't silently retry.
 - Do NOT pin `-m` (config default is used; `gpt-5.x-codex` variants 400 on ChatGPT-account auth).
+- **Echo the active model before Round 1** so the user can confirm: read the `model` line from `~/.codex/config.toml` (absent = "CLI default"); state it with the resolved tunables. If the user objects, stop before burning a round.
 
 ### Tunables (args, else default)
 | Var | Default | Meaning |
