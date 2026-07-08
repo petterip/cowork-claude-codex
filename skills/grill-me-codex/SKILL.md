@@ -102,8 +102,12 @@ Both `codex exec` and `codex exec resume` support `--json` and `-o/--output-last
 3. If round > `MAX_ROUNDS` → break to Resolution (deadlock).
 
 ### Resolution (you sign off — final gate)
-- **APPROVED:** present the final `PLAN_FILE`, a 3-bullet summary of what the two acts improved, and the round count. Ask: *"Grilled + survived N rounds of Codex. Implement it now?"* Code only on yes. **No code is written during either act.**
+- **APPROVED:** present the final `PLAN_FILE`, a 3-bullet summary of what the two acts improved, and the round count. Ask: *"Grilled + survived N rounds of Codex. Implement it now — Codex builds it (`/codex-build`), Claude builds it, or stop here?"* Code only on a yes. **No code is written during either act.**
 - **MAX_ROUNDS hit without APPROVED (deadlock):** do NOT fake convergence. List each unresolved point + Claude's counter-position; hand it to the user to break the tie. A flagged disagreement beats a false "approved."
+
+### ACT 3 (optional) — BUILD (Codex ↔ Claude, roles flipped)
+
+If the user picks Codex: invoke the `codex-build` skill with `SPEC_FILE=PLAN.md` and the same `LOG_FILE` — it appends `## Act 3 — Build` to the log, so one artifact tells the whole story (grilled → reviewed → built → verified). Roles flip: Codex writes the code with full access, Claude reviews the diff and runs the proof. If the user picks Claude, implement directly as usual.
 
 ---
 

@@ -180,8 +180,9 @@ The `< /dev/null` redirect is required on the resume call too — same non-inter
 3. round > `MAX_ROUNDS` → Resolution (deadlock).
 
 ### Resolution (you sign off)
-- **APPROVED:** present final plan + 3-bullet summary of what the two acts improved + round count. Ask before implementing. No code during either act.
+- **APPROVED:** present final plan + 3-bullet summary of what the two acts improved + round count. Ask: implement now — Codex builds it (`/codex-build`), Claude builds it, or stop? No code during either act.
 - **Deadlock (cap hit, no APPROVED):** list unresolved points + Claude's counter-position; hand to user. Don't fake convergence.
+- **Act 3 (optional):** user picks Codex → invoke the `codex-build` skill with `SPEC_FILE=PLAN.md` and the same `LOG_FILE`. Roles flip: Codex writes with full access, Claude reviews the diff + runs the proof; build rounds append to the same log.
 
 ---
 
