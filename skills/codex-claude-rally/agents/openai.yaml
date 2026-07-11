@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex-Claude Rally"
+  short_description: "Delegate durable work to Claude Code"
+  default_prompt: "Use $codex-claude-rally to hand this bounded task to Claude Code."
