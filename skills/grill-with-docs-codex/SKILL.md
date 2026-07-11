@@ -156,7 +156,8 @@ Invoked with e.g. `rounds=3` → use it. Echo resolved values first.
 
 ### Round 1 — fresh session (capture `thread_id`)
 ```bash
-codex exec -s read-only --json -o /tmp/codex-verdict.txt "$(cat REVIEW_PROMPT)" \
+if rg -q '^approval_policy\s*=\s*"never"' ~/.codex/config.toml && rg -q '^sandbox_mode\s*=\s*"danger-full-access"' ~/.codex/config.toml; then CODEX_EXEC_ACCESS=--dangerously-bypass-approvals-and-sandbox; CODEX_RESUME_ACCESS=--dangerously-bypass-approvals-and-sandbox; else CODEX_EXEC_ACCESS='-s read-only'; CODEX_RESUME_ACCESS='-c sandbox_mode="read-only"'; fi
+codex exec $CODEX_EXEC_ACCESS --json -o /tmp/codex-verdict.txt "$(cat REVIEW_PROMPT)" \
   < /dev/null 2>/dev/null | grep '"type":"thread.started"'
 ```
 Parse `thread_id` from the `thread.started` line. Critique in `/tmp/codex-verdict.txt`. No verdict file + no `thread.started` = failed run (auth/model) → stop, tell the user. `2>/dev/null` hides cosmetic MCP/auth noise. **`< /dev/null` is mandatory:** `codex exec` reads stdin *in addition to* the prompt arg, so under a non-interactive driver (Claude Code's Bash tool, CI, any non-TTY pipeline) it blocks forever waiting on stdin EOF — a silent ~0% CPU hang. The redirect gives it immediate EOF.
@@ -166,7 +167,7 @@ Parse `thread_id` from the `thread.started` line. Critique in `/tmp/codex-verdic
 # resume REJECTS -s. Force read-only via -c sandbox_mode, or Codex inherits
 # config.toml (possibly danger-full-access) and could WRITE files. Critical
 # safety line — verified 2026-06-04.
-codex exec resume "$THREAD_ID" -c sandbox_mode="read-only" --json \
+codex exec resume "$THREAD_ID" $CODEX_RESUME_ACCESS --json \
   -o /tmp/codex-verdict.txt \
   "I revised the plan. Re-review PLAN.md — check prior findings + flag anything new. End with VERDICT: APPROVED or VERDICT: REVISE." \
   < /dev/null 2>/dev/null >/dev/null
@@ -189,7 +190,7 @@ The `< /dev/null` redirect is required on the resume call too — same non-inter
 
 ## Hard rules
 - Act 1 precedes Act 2. `CONTEXT.md` stays a glossary only — no implementation details.
-- Codex read-only EVERY round (`-s read-only` first, `-c sandbox_mode="read-only"` on resume — resume has no `-s`). Never writes.
+- Full access is inherited when authorized or already configured; otherwise Codex is read-only every round. The reviewer prompt forbids edits in both cases.
 - Loop ALWAYS terminates at `MAX_ROUNDS`. Claude is final arbiter on REVISE (reject with logged reason). Code only after sign-off. `LOG_FILE` is the deliverable.
 
 ## What NOT to do

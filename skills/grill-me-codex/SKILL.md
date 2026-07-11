@@ -76,7 +76,8 @@ If invoked with e.g. `rounds=3`, use that for `MAX_ROUNDS`. Echo resolved values
 
 ### Round 1 — fresh session (capture `thread_id`)
 ```bash
-codex exec -s read-only --json -o /tmp/codex-verdict.txt "$(cat REVIEW_PROMPT)" \
+if rg -q '^approval_policy\s*=\s*"never"' ~/.codex/config.toml && rg -q '^sandbox_mode\s*=\s*"danger-full-access"' ~/.codex/config.toml; then CODEX_EXEC_ACCESS=--dangerously-bypass-approvals-and-sandbox; CODEX_RESUME_ACCESS=--dangerously-bypass-approvals-and-sandbox; else CODEX_EXEC_ACCESS='-s read-only'; CODEX_RESUME_ACCESS='-c sandbox_mode="read-only"'; fi
+codex exec $CODEX_EXEC_ACCESS --json -o /tmp/codex-verdict.txt "$(cat REVIEW_PROMPT)" \
   < /dev/null 2>/dev/null | grep '"type":"thread.started"'
 ```
 Parse `thread_id` from the `{"type":"thread.started","thread_id":"..."}` line → that's `THREAD_ID`. The critique is in `/tmp/codex-verdict.txt`. Confirm success by the verdict file + a `thread.started` line; if neither appears, the run failed (auth/model) — stop and tell the user. `2>/dev/null` suppresses cosmetic MCP/auth stderr noise. **`< /dev/null` is mandatory:** `codex exec` reads stdin *in addition to* the prompt arg, so under a non-interactive driver (Claude Code's Bash tool, CI, any non-TTY pipeline) it blocks forever waiting on stdin EOF — a silent ~0% CPU hang. The redirect gives it immediate EOF.
@@ -86,7 +87,7 @@ Parse `thread_id` from the `{"type":"thread.started","thread_id":"..."}` line �
 # resume REJECTS -s. Force read-only via -c sandbox_mode, or Codex inherits
 # config.toml (possibly danger-full-access) and could WRITE files. This is the
 # single most important safety line in the skill — verified 2026-06-04.
-codex exec resume "$THREAD_ID" -c sandbox_mode="read-only" --json \
+codex exec resume "$THREAD_ID" $CODEX_RESUME_ACCESS --json \
   -o /tmp/codex-verdict.txt \
   "I revised the plan. Re-review PLAN.md — check whether your prior findings are addressed and flag anything new. End with VERDICT: APPROVED or VERDICT: REVISE." \
   < /dev/null 2>/dev/null >/dev/null
@@ -114,7 +115,7 @@ If the user picks Codex: invoke the `codex-build` skill with `SPEC_FILE=PLAN.md`
 
 ## Hard rules
 - Act 1 always precedes Act 2 — don't write `PLAN.md` until the grill has actually resolved the decision tree with the user.
-- Codex is read-only EVERY round — `-s read-only` first call, `-c sandbox_mode="read-only"` on every resume (resume has no `-s`). It never writes.
+- Full access is inherited when authorized or already configured; otherwise Codex is read-only every round. The reviewer prompt forbids edits in both cases.
 - The loop ALWAYS terminates at `MAX_ROUNDS`.
 - Claude is final arbiter on every REVISE — incorporate good critiques, reject bad ones *with a logged reason*. Don't cave to everything (defeats the cross-model check) and don't ignore it (defeats the point).
 - Code only after the user's final sign-off.

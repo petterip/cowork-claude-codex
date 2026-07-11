@@ -17,11 +17,10 @@ exchange work through durable artifacts.
 - `codex-review` — review an existing plan with Codex before implementation.
 - `codex-build` — Codex implements a frozen plan; Claude reviews and verifies.
 
-Install these into Claude Code:
+Install with symlinks so this repository stays the single source of truth:
 
 ```bash
-cp -R skills/grill-me-codex skills/grill-with-docs-codex \
-  skills/codex-review skills/codex-build ~/.claude/skills/
+./install.sh --agent claude
 ```
 
 ### Codex
@@ -31,19 +30,25 @@ cp -R skills/grill-me-codex skills/grill-with-docs-codex \
 - `claude-handoff` — start a fresh Claude background worker from a Codex
   handoff summary.
 
-Install these into Codex:
+Install with symlinks:
 
 ```bash
-cp -R skills/codex-claude-rally skills/claude-handoff ~/.codex/skills/
+./install.sh --agent codex
 ```
 
 ## Collaboration contract
 
-`codex-claude-rally` uses `.model-rally/<job-id>/` in the target repository:
+`codex-claude-rally` uses an external, versioned job directory. This remains
+shared even when Claude Code isolates a write worker in a worktree:
 
-- `request.md` — bounded task and allowed paths.
-- `response.md` — Claude's durable result.
-- `from-codex.md` — Codex's independent verification or follow-up request.
+```text
+${XDG_STATE_HOME:-$HOME/.local/state}/cowork-claude-codex/jobs/<job-id>/
+```
+
+Each job has a machine-readable manifest/state machine, immutable numbered
+requests, responses, and reviews, plus an append-only event log. The job
+protocol defaults to external artifacts, records the base commit and worker
+worktree, and requires independent Codex verification before acceptance.
 
 Claude workers are started with `claude --bg`, not `claude -p`. The worker ID
 and Claude session ID are available via `claude agents --all --json`; use the
@@ -64,6 +69,13 @@ export CLAUDE_RALLY_SUBSCRIPTION_ONLY=1
 The account-level usage-credit setting cannot be inspected from the CLI, so the
 explicit variable is a required human confirmation. The gate never clears or
 changes credentials automatically.
+
+Run the privacy-safe environment check before a rally:
+
+```bash
+CLAUDE_RALLY_SUBSCRIPTION_ONLY=1 \
+  skills/codex-claude-rally/scripts/verify-environment.sh
+```
 
 ## Safety boundaries
 

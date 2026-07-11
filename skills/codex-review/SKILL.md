@@ -73,10 +73,13 @@ Maintain `ROUND` (start 1) and `THREAD_ID` (empty until round 1 returns).
 
 > You are an adversarial reviewer for an implementation plan. Be skeptical and specific — your job is to find what breaks, not to be agreeable. Read the plan at `PLAN.md` (and any repo files you need; you are read-only). Identify concrete flaws: security holes, race conditions, missing edge cases, schema conflicts, wrong assumptions, observability gaps, simpler alternatives. For each, give a one-line fix. Do NOT modify any files. End your reply with EXACTLY one line: `VERDICT: APPROVED` if the plan is sound enough to implement, or `VERDICT: REVISE` if it still has material problems.
 
+**Access inheritance:** if the user authorized full access or Codex config has `approval_policy="never"` with `sandbox_mode="danger-full-access"`, set both access variables to `--dangerously-bypass-approvals-and-sandbox`. Otherwise retain the read-only defaults below. Full-access reviewers must still follow the prompt's no-edit instruction.
+
 **Round 1** (creates the session — capture `thread_id`):
 
 ```bash
-codex exec -s read-only --json \
+if rg -q '^approval_policy\s*=\s*"never"' ~/.codex/config.toml && rg -q '^sandbox_mode\s*=\s*"danger-full-access"' ~/.codex/config.toml; then CODEX_EXEC_ACCESS=--dangerously-bypass-approvals-and-sandbox; CODEX_RESUME_ACCESS=--dangerously-bypass-approvals-and-sandbox; else CODEX_EXEC_ACCESS='-s read-only'; CODEX_RESUME_ACCESS='-c sandbox_mode="read-only"'; fi
+codex exec $CODEX_EXEC_ACCESS --json \
   -o /tmp/codex-verdict.txt \
   "$(cat REVIEW_PROMPT)" \
   < /dev/null 2>/dev/null | grep '"type":"thread.started"'
@@ -94,7 +97,7 @@ Parse `thread_id` from the `{"type":"thread.started","thread_id":"..."}` line �
 ```bash
 # NOTE: resume rejects -s. Force read-only via -c sandbox_mode, or Codex
 # inherits config.toml (possibly danger-full-access) and could write files.
-codex exec resume "$THREAD_ID" -c sandbox_mode="read-only" --json \
+codex exec resume "$THREAD_ID" $CODEX_RESUME_ACCESS --json \
   -o /tmp/codex-verdict.txt \
   "I revised the plan. Re-review PLAN.md. Same rules. End with VERDICT: APPROVED or VERDICT: REVISE." \
   < /dev/null 2>/dev/null >/dev/null
@@ -117,7 +120,7 @@ Both `codex exec` and `codex exec resume` support `--json` (stream → parse `th
 
 ## Hard rules
 
-- Codex is read-only EVERY round — `-s read-only` for the first call, `-c sandbox_mode="read-only"` for every resume (resume has no `-s`). It never writes. If you're tempted to give it write access, stop — that's a different skill.
+- In a full-access context, every Codex child receives `--dangerously-bypass-approvals-and-sandbox`; otherwise retain the read-only flags. The reviewer prompt still forbids edits.
 - The loop ALWAYS terminates at `MAX_ROUNDS`. No unbounded recursion.
 - Claude is the final arbiter on every REVISE — incorporate good critiques, reject bad ones *with a reason logged*. Don't cave to Codex on everything (that defeats the cross-model check) and don't ignore it (that defeats the point).
 - Code only after human gate #2.

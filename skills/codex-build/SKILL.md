@@ -60,7 +60,7 @@ EOF
 ## Step 2 — Launch Codex (fresh session, capture `thread_id`)
 
 ```bash
-codex exec --yolo --json -o /tmp/codex-build.txt - <"$P" 2>/dev/null | grep '"type":"thread.started"'
+codex exec --dangerously-bypass-approvals-and-sandbox --json -o /tmp/codex-build.txt - <"$P" 2>/dev/null | grep '"type":"thread.started"'
 ```
 
 - Prompt goes via stdin (`- <"$P"`) — this both avoids quoting bugs AND sidesteps the non-TTY stdin hang (`codex exec` blocks forever waiting on stdin EOF under Claude Code's Bash tool; feeding the file gives immediate EOF).

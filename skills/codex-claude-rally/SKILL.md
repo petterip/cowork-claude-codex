@@ -1,63 +1,78 @@
 ---
 name: codex-claude-rally
-description: "Delegate work from Codex to a persistent Claude Code background agent and exchange results through durable workspace artifacts. Use when the user asks to hand work to Claude, toss work between Codex and Claude, get Claude's independent implementation or review, or continue a Claude worker without claude -p."
+description: "Delegate bounded work from Codex to a persistent Claude Code background worker and exchange verified results through durable, versioned job artifacts. Use when the user asks to hand work between Codex and Claude, request independent Claude implementation or review, or resume a Claude worker without claude -p."
 ---
 
 # Codex-Claude Rally
 
-Use this skill for a two-way, asynchronous collaboration. Codex launches Claude with `claude --bg`; Claude writes its result to a shared job folder; Codex reads, verifies, and either finishes the task or sends a bounded follow-up. Do not use `claude -p`.
+Use this skill for asynchronous, two-way collaboration. Codex launches Claude with `claude --bg`; Claude publishes an immutable response; Codex independently verifies it and either accepts it, asks one bounded follow-up, or escalates. Do not use `claude -p`.
+
+Read [the job protocol](references/job-protocol.md) before creating or resuming a job.
 
 ## Subscription-only gate
 
 Run `scripts/assert-subscription-auth.sh` before every Claude launch and resume. It fails closed when API keys, gateway tokens, an API-key helper, Bedrock, Vertex, Foundry, or non-subscription authentication is detected. It also requires `CLAUDE_RALLY_SUBSCRIPTION_ONLY=1` as an explicit confirmation that usage credits are disabled in the Claude account. Do not set this variable on behalf of the user.
 
-Anthropic account settings cannot be inspected from the CLI. If the user has enabled usage credits, disable them before setting the confirmation variable; otherwise Claude may bill usage beyond the subscription limit. If the gate fails, do not unset a credential or change authentication automatically: report the blocker and let the user choose.
+Anthropic account settings cannot be inspected from the CLI. If the gate fails, do not change credentials automatically: report the blocker and let the user decide.
+
+## Full-access inheritance
+
+If the user authorized full access or Codex already has `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`, every Claude and Codex child must inherit full access. `scripts/detect-full-access.sh` records this in `manifest.json`; do not silently downgrade a child to manual, read-only, or approval-gated mode.
+
+## Preflight and recovery
+
+Before launching a job, run `CLAUDE_RALLY_SUBSCRIPTION_ONLY=1 scripts/verify-environment.sh`.
+
+- Missing worker/session: inspect `claude logs <worker-id>`; if it cannot resume, create the next immutable request and respawn.
+- Unexpected permission prompt or missing full-access flag: stop the round, record `WAITING_FOR_HUMAN`, and inspect the child launch policy. Never silently downgrade access.
+- Base commit, allowed-path, or proof mismatch: record `WAITING_FOR_HUMAN`; do not continue the worker speculatively.
+- User cancellation: `claude stop <worker-id>`, preserve artifacts, and record `STOPPED`.
 
 ## Create a job
 
-From the target repository root, choose a short unique `JOB_ID` and create `.model-rally/$JOB_ID/`. Do not use this skill when the working tree has unrelated edits that a worker could overwrite; inspect `git status --short` first and agree on the allowed paths.
-
-Write `.model-rally/$JOB_ID/request.md` with the task, exact allowed paths and actions, key context, expected deliverable, and a rule that Claude must not commit, push, deploy, change credentials, or start another worker. Require it to write `response.md` with outcome, decisions, files changed, commands run, remaining risks, and a final `READY_FOR_CODEX` or `NEEDS_CODEX` line.
-
-For a review-only job, make the allowed actions read-only and require ranked findings. Never let Codex and Claude edit the same paths concurrently.
-
-## Launch Claude
-
-From the target repository root:
+From the target repository root, create an external job directory. It must be outside the checkout because Claude background write sessions may move into an isolated worktree.
 
 ```bash
 JOB_ID=<short-id>
-JOB_DIR=".model-rally/$JOB_ID"
-"$HOME/.codex/skills/codex-claude-rally/scripts/assert-subscription-auth.sh"
-claude --bg --name "codex-$JOB_ID" "$(cat "$JOB_DIR/request.md")" \
-  | tee "$JOB_DIR/claude-launch.txt"
-claude agents --cwd "$PWD" --all --json
+scripts/create-rally-job.sh "$JOB_ID" read-only
+# Use `write` only when Claude is the sole writer for the requested paths.
+RALLY_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cowork-claude-codex/jobs/$JOB_ID"
 ```
 
-Record the job ID, repository root, start time, launch output, and Claude session ID in `$JOB_DIR/state.md`. The durable result is always `$JOB_DIR/response.md`, not the background-command output.
+Replace the placeholders in `$RALLY_DIR/requests/001.md`. Include the task, mode, exact allowed paths, source-of-truth references, proof command, non-goals, and the absolute `$RALLY_DIR` path. Keep the request bounded; link to long artifacts rather than copying them.
 
-## Receive and verify Claude's work
+For a write job, record the worker's actual worktree path in `manifest.json` after launch. Never let Claude and Codex edit the same paths concurrently.
 
-When `response.md` appears or the worker completes:
+## Launch Claude
 
-1. Read `response.md`, `git status --short`, and the full diff for allowed paths.
-2. Independently run the proof commands relevant to the claimed work.
-3. Write `$JOB_DIR/from-codex.md` with `ACCEPTED`, a precise follow-up, or `NEEDS_HUMAN`.
-4. Do not claim success from Claude's report alone.
-
-## Continue the rally
-
-Use at most two Claude follow-up rounds. Put a precise request in `$JOB_DIR/follow-up-N.md`, then resume the recorded session:
+Run the gate, then pass Claude the immutable request and the absolute artifact directory. Claude must write only to a temporary response file and rename it to `responses/001.md` when complete.
 
 ```bash
 "$HOME/.codex/skills/codex-claude-rally/scripts/assert-subscription-auth.sh"
-claude --bg --resume "$CLAUDE_SESSION_ID" --name "codex-$JOB_ID-rN" \
-  "$(cat "$JOB_DIR/follow-up-N.md")" \
-  | tee "$JOB_DIR/claude-launch-round-N.txt"
+ACCESS_ARGS=()
+if [[ "$(scripts/detect-full-access.sh)" == full ]]; then ACCESS_ARGS=(--dangerously-skip-permissions); fi
+claude --bg "${ACCESS_ARGS[@]}" --name "codex-$JOB_ID" \
+  "Read $RALLY_DIR/requests/001.md. Work only within its allowed paths. Publish the result atomically to $RALLY_DIR/responses/001.md, append state events to $RALLY_DIR/events.ndjson, and end the response with READY_FOR_CODEX, NEEDS_CODEX, or WAITING_FOR_HUMAN." \
+  | tee "$RALLY_DIR/claude-launch-001.txt"
+claude agents --cwd "$PWD" --all --json
 ```
 
-Capture the new worker/session IDs with `claude agents --cwd "$PWD" --all --json`. If Claude writes `NEEDS_CODEX`, answer in `from-codex.md` and resume it. Stop delegation after two unsuccessful follow-ups.
+Record the launch-printed worker ID, available Claude session ID, actual worker CWD, and Codex thread ID in `manifest.json`. If the installed Claude version does not support a background resume, use its documented `logs`, `attach`, `stop`, or respawn workflow; do not scrape terminal output.
+
+## Verify and continue
+
+When a response appears, transition the manifest to `VERIFYING` and run:
+
+```bash
+scripts/validate-rally-job.sh "$RALLY_DIR"
+```
+
+Read the immutable response, inspect the full allowed-path diff against the recorded base commit, and run the proof command yourself. Write the independent finding to `reviews/001.md`; append an event and transition to `ACCEPTED`, `WAITING_FOR_HUMAN`, or `RUNNING`.
+
+For a material fix, create `requests/002.md`; never overwrite round 001. Allow at most two transitions from `VERIFYING` back to `RUNNING`. Before any resume, re-run the subscription gate and verify the recorded base commit, worktree path, and allowed paths. Mismatch means `WAITING_FOR_HUMAN`. When `full_access_authorized` is true, resume Claude with `--dangerously-skip-permissions`.
+
+For cancellation, use `claude stop <worker-id>`, preserve the artifacts, and transition to `STOPPED`.
 
 ## Pair with the Claude skills
 
-`/grill-me-codex`, `/codex-review`, and `/codex-build` cover Claude → Codex work. This skill supplies the inverse Codex → Claude entry point. Use shared `.model-rally` artifacts whenever either side hands control back.
+`/grill-me-codex`, `/codex-review`, and `/codex-build` cover Claude → Codex work. This skill supplies the inverse Codex → Claude entry point. Both directions use durable artifacts and independent verification rather than trusting a model's terminal report.
