@@ -68,6 +68,19 @@ Show the user the plan inline and say you're sending it to Codex for adversarial
 ### Step 2 — The loop
 
 Maintain `ROUND` (start 1) and `THREAD_ID` (empty until round 1 returns).
+Create one private, per-run artifact directory before Round 1. It prevents
+parallel reviews from sharing a verdict file and gives every launch a durable
+diagnostic trail. Do not use predictable files directly under `/tmp`.
+
+```bash
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-review.XXXXXX")
+chmod 700 "$RUN_DIR"
+trap 'rm -rf "$RUN_DIR"' EXIT
+PROMPT_FILE="$RUN_DIR/review-prompt.md"
+VERDICT_FILE="$RUN_DIR/verdict.md"
+EVENTS_FILE="$RUN_DIR/events.jsonl"
+STDERR_FILE="$RUN_DIR/stderr.log"
+```
 
 **The review prompt** sent to Codex each round (adjust the task line):
 
@@ -79,12 +92,18 @@ Maintain `ROUND` (start 1) and `THREAD_ID` (empty until round 1 returns).
 
 ```bash
 if rg -q '^approval_policy\s*=\s*"never"' ~/.codex/config.toml && rg -q '^sandbox_mode\s*=\s*"danger-full-access"' ~/.codex/config.toml; then CODEX_EXEC_ACCESS=--dangerously-bypass-approvals-and-sandbox; CODEX_RESUME_ACCESS=--dangerously-bypass-approvals-and-sandbox; else CODEX_EXEC_ACCESS='-s read-only'; CODEX_RESUME_ACCESS='-c sandbox_mode="read-only"'; fi
-codex exec $CODEX_EXEC_ACCESS --json \
-  -o /tmp/codex-verdict.txt \
-  "$(cat REVIEW_PROMPT)" \
-  < /dev/null 2>/dev/null | grep '"type":"thread.started"'
+cat >"$PROMPT_FILE" <<'EOF'
+You are an adversarial reviewer for an implementation plan. Be skeptical and specific — your job is to find what breaks, not to be agreeable. Read PLAN.md and any repository files you need. Do not modify files. Identify concrete flaws and give a one-line fix for each. End with exactly one line: VERDICT: APPROVED or VERDICT: REVISE.
+EOF
+if ! timeout 600 codex exec $CODEX_EXEC_ACCESS --json -o "$VERDICT_FILE" \
+  "$(<"$PROMPT_FILE")" < /dev/null >"$EVENTS_FILE" 2>"$STDERR_FILE"; then
+  printf 'Codex review launch failed; inspect %s and %s.\n' "$EVENTS_FILE" "$STDERR_FILE" >&2
+  exit 1
+fi
+THREAD_ID=$(jq -r 'select(.type == "thread.started") | .thread_id' "$EVENTS_FILE" | head -n1)
+[[ -n "$THREAD_ID" && "$THREAD_ID" != null && -s "$VERDICT_FILE" ]] || { printf 'Codex did not return a thread ID and verdict.\n' >&2; exit 1; }
 ```
-Parse `thread_id` from the `{"type":"thread.started","thread_id":"..."}` line → that is `THREAD_ID`. The critique text lands in `/tmp/codex-verdict.txt` (Codex's last message). Read that file.
+The critique text lands in `$VERDICT_FILE` (Codex's last message). Read that file.
 
 > Note: stderr carries cosmetic MCP/auth noise on some setups — `2>/dev/null` is intentional. Confirm success by the presence of the verdict file + a `thread.started` line. If neither appears, the run failed (auth/model) — stop and tell the user.
 >
@@ -97,16 +116,20 @@ Parse `thread_id` from the `{"type":"thread.started","thread_id":"..."}` line �
 ```bash
 # NOTE: resume rejects -s. Force read-only via -c sandbox_mode, or Codex
 # inherits config.toml (possibly danger-full-access) and could write files.
-codex exec resume "$THREAD_ID" $CODEX_RESUME_ACCESS --json \
-  -o /tmp/codex-verdict.txt \
+if ! timeout 600 codex exec resume "$THREAD_ID" $CODEX_RESUME_ACCESS --json \
+  -o "$VERDICT_FILE" \
   "I revised the plan. Re-review PLAN.md. Same rules. End with VERDICT: APPROVED or VERDICT: REVISE." \
-  < /dev/null 2>/dev/null >/dev/null
+  < /dev/null >"$EVENTS_FILE" 2>"$STDERR_FILE"; then
+  printf 'Codex review resume failed; inspect %s and %s.\n' "$EVENTS_FILE" "$STDERR_FILE" >&2
+  exit 1
+fi
+[[ -s "$VERDICT_FILE" ]] || { printf 'Codex resume returned no verdict.\n' >&2; exit 1; }
 ```
 
 Both `codex exec` and `codex exec resume` support `--json` (stream → parse `thread_id` first round) and `-o/--output-last-message` (verdict capture).
 
 **Each round, after Codex returns:**
-1. Read `/tmp/codex-verdict.txt`. Append to `LOG_FILE`: `## Round <n> — Codex` + the full critique.
+1. Confirm the resume command exited successfully and `$VERDICT_FILE` is nonempty; otherwise stop and report the private diagnostic paths. Read `$VERDICT_FILE`. Append to `LOG_FILE`: `## Round <n> — Codex` + the full critique.
 2. Grep the last line for the verdict token.
    - `VERDICT: APPROVED` → break the loop, go to Step 3 (converged).
    - `VERDICT: REVISE` → Claude reads the critique, decides **what's actually worth acting on** (Claude has final say — Codex advises, it does not command). Revise `PLAN_FILE`. Append to `LOG_FILE`: `### Claude's response` + what you changed and what you rejected and why. Increment `ROUND`.

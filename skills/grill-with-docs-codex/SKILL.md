@@ -156,21 +156,40 @@ Invoked with e.g. `rounds=3` → use it. Echo resolved values first.
 
 ### Round 1 — fresh session (capture `thread_id`)
 ```bash
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-review.XXXXXX")
+chmod 700 "$WORK_DIR"
+trap 'rm -rf "$WORK_DIR"' EXIT
+PROMPT_FILE="$WORK_DIR/review-prompt.md"
+VERDICT_FILE="$WORK_DIR/verdict.md"
+EVENTS_FILE="$WORK_DIR/events.jsonl"
+STDERR_FILE="$WORK_DIR/stderr.log"
 if rg -q '^approval_policy\s*=\s*"never"' ~/.codex/config.toml && rg -q '^sandbox_mode\s*=\s*"danger-full-access"' ~/.codex/config.toml; then CODEX_EXEC_ACCESS=--dangerously-bypass-approvals-and-sandbox; CODEX_RESUME_ACCESS=--dangerously-bypass-approvals-and-sandbox; else CODEX_EXEC_ACCESS='-s read-only'; CODEX_RESUME_ACCESS='-c sandbox_mode="read-only"'; fi
-codex exec $CODEX_EXEC_ACCESS --json -o /tmp/codex-verdict.txt "$(cat REVIEW_PROMPT)" \
-  < /dev/null 2>/dev/null | grep '"type":"thread.started"'
+cat >"$PROMPT_FILE" <<'EOF'
+You are an adversarial reviewer for an implementation plan. Be skeptical and specific — your job is to find what breaks, not to be agreeable. Read the plan at PLAN.md (and CONTEXT.md/ADRs for the domain language) and any repository files you need. Do not modify files. Identify concrete flaws: security holes, race conditions, missing edge cases, schema conflicts, domain-language mismatches, wrong assumptions, observability gaps, and simpler alternatives. For each, give a one-line fix. End with exactly one line: VERDICT: APPROVED or VERDICT: REVISE.
+EOF
+if ! timeout 600 codex exec $CODEX_EXEC_ACCESS --json -o "$VERDICT_FILE" "$(<"$PROMPT_FILE")" \
+  < /dev/null >"$EVENTS_FILE" 2>"$STDERR_FILE"; then
+  printf 'Codex review failed; inspect %s and %s.\n' "$EVENTS_FILE" "$STDERR_FILE" >&2
+  exit 1
+fi
+THREAD_ID=$(jq -r 'select(.type == "thread.started") | .thread_id' "$EVENTS_FILE" | head -n1)
+[[ -n "$THREAD_ID" && "$THREAD_ID" != null && -s "$VERDICT_FILE" ]] || { printf 'Codex did not return a thread ID and verdict.\n' >&2; exit 1; }
 ```
-Parse `thread_id` from the `thread.started` line. Critique in `/tmp/codex-verdict.txt`. No verdict file + no `thread.started` = failed run (auth/model) → stop, tell the user. `2>/dev/null` hides cosmetic MCP/auth noise. **`< /dev/null` is mandatory:** `codex exec` reads stdin *in addition to* the prompt arg, so under a non-interactive driver (Claude Code's Bash tool, CI, any non-TTY pipeline) it blocks forever waiting on stdin EOF — a silent ~0% CPU hang. The redirect gives it immediate EOF.
+Parse `thread_id` from `$EVENTS_FILE`. Critique is in `$VERDICT_FILE`; no verdict or no thread ID means failed run. **`< /dev/null` is mandatory:** `codex exec` reads stdin in addition to the prompt argument, so a non-interactive driver otherwise waits forever.
 
 ### Rounds 2..MAX — resume SAME session
 ```bash
 # resume REJECTS -s. Force read-only via -c sandbox_mode, or Codex inherits
 # config.toml (possibly danger-full-access) and could WRITE files. Critical
 # safety line — verified 2026-06-04.
-codex exec resume "$THREAD_ID" $CODEX_RESUME_ACCESS --json \
-  -o /tmp/codex-verdict.txt \
+if ! timeout 600 codex exec resume "$THREAD_ID" $CODEX_RESUME_ACCESS --json \
+  -o "$VERDICT_FILE" \
   "I revised the plan. Re-review PLAN.md — check prior findings + flag anything new. End with VERDICT: APPROVED or VERDICT: REVISE." \
-  < /dev/null 2>/dev/null >/dev/null
+  < /dev/null >"$EVENTS_FILE" 2>"$STDERR_FILE"; then
+  printf 'Codex review resume failed; inspect %s and %s.\n' "$EVENTS_FILE" "$STDERR_FILE" >&2
+  exit 1
+fi
+[[ -s "$VERDICT_FILE" ]] || { printf 'Codex resume returned no verdict.\n' >&2; exit 1; }
 ```
 The `< /dev/null` redirect is required on the resume call too — same non-interactive stdin hang as Round 1.
 

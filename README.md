@@ -54,27 +54,21 @@ Claude workers are started with `claude --bg`, not `claude -p`. The worker ID
 and Claude session ID are available via `claude agents --all --json`; use the
 session ID for bounded follow-up rounds.
 
-## Subscription-only gate
+## Subscription authentication gate
 
 Before every Codex-initiated Claude launch or resume, the rally skill runs
 `scripts/assert-subscription-auth.sh`. It blocks API keys, gateway tokens,
 Bedrock, Vertex, Foundry, API-key helpers, and non-subscription authentication.
+It then requires Claude Code to report an eligible first-party Claude subscription.
 
-The user must also disable Claude usage credits in their account and then set:
-
-```bash
-export CLAUDE_RALLY_SUBSCRIPTION_ONLY=1
-```
-
-The account-level usage-credit setting cannot be inspected from the CLI, so the
-explicit variable is a required human confirmation. The gate never clears or
-changes credentials automatically.
+Claude Code does not expose account-level usage-credit settings to the CLI, so
+the skill deliberately does not claim to verify them or ask for an environment
+variable as a substitute. The gate never clears or changes credentials automatically.
 
 Run the privacy-safe environment check before a rally:
 
 ```bash
-CLAUDE_RALLY_SUBSCRIPTION_ONLY=1 \
-  skills/codex-claude-rally/scripts/verify-environment.sh
+skills/codex-claude-rally/scripts/verify-environment.sh
 ```
 
 ## Safety boundaries

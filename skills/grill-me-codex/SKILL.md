@@ -74,30 +74,55 @@ If invoked with e.g. `rounds=3`, use that for `MAX_ROUNDS`. Echo resolved values
 ### The review prompt (sent each round)
 > You are an adversarial reviewer for an implementation plan. Be skeptical and specific — your job is to find what breaks, not to be agreeable. Read the plan at `PLAN.md` and any repo files you need (you are read-only). Identify concrete flaws: security holes, race conditions, missing edge cases, schema conflicts, wrong assumptions, observability gaps, simpler alternatives. For each, give a one-line fix. Do NOT modify any files. End your reply with EXACTLY one line: `VERDICT: APPROVED` if the plan is sound enough to implement, or `VERDICT: REVISE` if it still has material problems.
 
+Before Round 1, create private per-run artifacts. Never share a predictable
+`/tmp` filename between reviews:
+
+```bash
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-review.XXXXXX")
+chmod 700 "$RUN_DIR"
+trap 'rm -rf "$RUN_DIR"' EXIT
+PROMPT_FILE="$RUN_DIR/review-prompt.md"
+VERDICT_FILE="$RUN_DIR/verdict.md"
+EVENTS_FILE="$RUN_DIR/events.jsonl"
+STDERR_FILE="$RUN_DIR/stderr.log"
+cat >"$PROMPT_FILE" <<'EOF'
+You are an adversarial reviewer for an implementation plan. Read PLAN.md and repository files as needed, but do not modify files. Identify concrete flaws and a one-line fix for each. End with exactly one line: VERDICT: APPROVED or VERDICT: REVISE.
+EOF
+```
+
 ### Round 1 — fresh session (capture `thread_id`)
 ```bash
 if rg -q '^approval_policy\s*=\s*"never"' ~/.codex/config.toml && rg -q '^sandbox_mode\s*=\s*"danger-full-access"' ~/.codex/config.toml; then CODEX_EXEC_ACCESS=--dangerously-bypass-approvals-and-sandbox; CODEX_RESUME_ACCESS=--dangerously-bypass-approvals-and-sandbox; else CODEX_EXEC_ACCESS='-s read-only'; CODEX_RESUME_ACCESS='-c sandbox_mode="read-only"'; fi
-codex exec $CODEX_EXEC_ACCESS --json -o /tmp/codex-verdict.txt "$(cat REVIEW_PROMPT)" \
-  < /dev/null 2>/dev/null | grep '"type":"thread.started"'
+if ! timeout 600 codex exec $CODEX_EXEC_ACCESS --json -o "$VERDICT_FILE" "$(<"$PROMPT_FILE")" \
+  < /dev/null >"$EVENTS_FILE" 2>"$STDERR_FILE"; then
+  printf 'Codex review failed; inspect %s and %s.\n' "$EVENTS_FILE" "$STDERR_FILE" >&2
+  exit 1
+fi
+THREAD_ID=$(jq -r 'select(.type == "thread.started") | .thread_id' "$EVENTS_FILE" | head -n1)
+[[ -n "$THREAD_ID" && "$THREAD_ID" != null && -s "$VERDICT_FILE" ]] || { printf 'Codex did not return a thread ID and verdict.\n' >&2; exit 1; }
 ```
-Parse `thread_id` from the `{"type":"thread.started","thread_id":"..."}` line → that's `THREAD_ID`. The critique is in `/tmp/codex-verdict.txt`. Confirm success by the verdict file + a `thread.started` line; if neither appears, the run failed (auth/model) — stop and tell the user. `2>/dev/null` suppresses cosmetic MCP/auth stderr noise. **`< /dev/null` is mandatory:** `codex exec` reads stdin *in addition to* the prompt arg, so under a non-interactive driver (Claude Code's Bash tool, CI, any non-TTY pipeline) it blocks forever waiting on stdin EOF — a silent ~0% CPU hang. The redirect gives it immediate EOF.
+The critique is in `$VERDICT_FILE`. Confirm both a thread ID and nonempty verdict; on failure report the private diagnostics. **`< /dev/null` is mandatory:** `codex exec` reads stdin in addition to the prompt arg, so under a non-interactive driver it blocks forever waiting on stdin EOF.
 
 ### Rounds 2..MAX — resume the SAME session (Codex remembers its prior critiques)
 ```bash
 # resume REJECTS -s. Force read-only via -c sandbox_mode, or Codex inherits
 # config.toml (possibly danger-full-access) and could WRITE files. This is the
 # single most important safety line in the skill — verified 2026-06-04.
-codex exec resume "$THREAD_ID" $CODEX_RESUME_ACCESS --json \
-  -o /tmp/codex-verdict.txt \
+if ! timeout 600 codex exec resume "$THREAD_ID" $CODEX_RESUME_ACCESS --json \
+  -o "$VERDICT_FILE" \
   "I revised the plan. Re-review PLAN.md — check whether your prior findings are addressed and flag anything new. End with VERDICT: APPROVED or VERDICT: REVISE." \
-  < /dev/null 2>/dev/null >/dev/null
+  < /dev/null >"$EVENTS_FILE" 2>"$STDERR_FILE"; then
+  printf 'Codex review resume failed; inspect %s and %s.\n' "$EVENTS_FILE" "$STDERR_FILE" >&2
+  exit 1
+fi
+[[ -s "$VERDICT_FILE" ]] || { printf 'Codex resume returned no verdict.\n' >&2; exit 1; }
 ```
 Both `codex exec` and `codex exec resume` support `--json` and `-o/--output-last-message`. The `< /dev/null` redirect is required on the resume call too — same non-interactive stdin hang as Round 1.
 
 **Timeout guard (both rounds):** run every `codex exec` / `codex exec resume` with a 10-minute ceiling so any future stall fails loud instead of hanging silently. Via Claude Code's Bash tool, pass `timeout: 600000` on the tool call (the default 2-minute tool timeout is too short for real reviews and would kill them mid-run). In a plain shell, prefix the command with `timeout 600` (Linux / Git Bash) or `gtimeout 600` (macOS via coreutils — stock macOS has no `timeout`). If the ceiling trips, treat it as a failed run: stop and tell the user rather than retrying blind.
 
 ### Each round, after Codex returns
-1. Read `/tmp/codex-verdict.txt`; append to `LOG_FILE`: `## Round <n> — Codex` + the full critique.
+1. Confirm the resume exits successfully and `$VERDICT_FILE` is nonempty; otherwise stop. Read `$VERDICT_FILE`; append to `LOG_FILE`: `## Round <n> — Codex` + the full critique.
 2. Grep the last line for the verdict:
    - `VERDICT: APPROVED` → break to Resolution (converged).
    - `VERDICT: REVISE` → Claude decides **what's actually worth acting on** (Claude is final arbiter — Codex advises, doesn't command). Revise `PLAN_FILE`. Append `### Claude's response` to `LOG_FILE`: what changed, what was rejected, why. Increment round.

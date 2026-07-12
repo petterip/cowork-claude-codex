@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 fail() {
   printf 'Claude launch blocked: %s\n' "$1" >&2
@@ -12,11 +13,16 @@ for variable in \
   ANTHROPIC_BASE_URL \
   ANTHROPIC_BEDROCK_BASE_URL \
   ANTHROPIC_VERTEX_BASE_URL \
+  ANTHROPIC_AWS_ACCESS_KEY_ID \
+  ANTHROPIC_AWS_SECRET_ACCESS_KEY \
+  ANTHROPIC_AWS_SESSION_TOKEN \
   AWS_BEARER_TOKEN_BEDROCK \
+  MANTLE_API_KEY \
   CLAUDE_CODE_API_KEY_HELPER_TTL_MS \
   CLAUDE_CODE_USE_BEDROCK \
   CLAUDE_CODE_USE_VERTEX \
   CLAUDE_CODE_USE_FOUNDRY \
+  CLAUDE_CODE_USE_MANTLE \
   CLAUDE_CODE_SKIP_BEDROCK_AUTH \
   CLAUDE_CODE_SKIP_VERTEX_AUTH; do
   if [[ -n "${!variable-}" ]]; then
@@ -34,9 +40,6 @@ for settings_file in \
   fi
 done
 
-[[ "${CLAUDE_RALLY_SUBSCRIPTION_ONLY-}" == "1" ]] || fail \
-  'set CLAUDE_RALLY_SUBSCRIPTION_ONLY=1 only after disabling Claude usage credits in your account.'
-
 auth_status=$(claude auth status --json) || fail 'Claude authentication status is unavailable.'
 printf '%s' "$auth_status" | jq -e '
   .loggedIn == true and
@@ -45,4 +48,4 @@ printf '%s' "$auth_status" | jq -e '
   (.subscriptionType | test("^(pro|max|team|enterprise)"; "i"))
 ' >/dev/null || fail 'sign in with an eligible Claude subscription; API and cloud-provider authentication are not allowed.'
 
-printf 'Claude subscription-only preflight passed.\n'
+printf 'Claude subscription authentication preflight passed.\n'

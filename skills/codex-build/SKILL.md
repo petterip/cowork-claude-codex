@@ -60,12 +60,23 @@ EOF
 ## Step 2 — Launch Codex (fresh session, capture `thread_id`)
 
 ```bash
-codex exec --dangerously-bypass-approvals-and-sandbox --json -o /tmp/codex-build.txt - <"$P" 2>/dev/null | grep '"type":"thread.started"'
+BUILD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-build.XXXXXX")
+chmod 700 "$BUILD_DIR"
+trap 'rm -rf "$BUILD_DIR"' EXIT
+BUILD_REPORT="$BUILD_DIR/report.md"
+BUILD_EVENTS="$BUILD_DIR/events.jsonl"
+BUILD_STDERR="$BUILD_DIR/stderr.log"
+if ! timeout 600 codex exec --dangerously-bypass-approvals-and-sandbox --json -o "$BUILD_REPORT" - <"$P" >"$BUILD_EVENTS" 2>"$BUILD_STDERR"; then
+  printf 'Codex build failed; inspect %s and %s.\n' "$BUILD_EVENTS" "$BUILD_STDERR" >&2
+  exit 1
+fi
+THREAD_ID=$(jq -r 'select(.type == "thread.started") | .thread_id' "$BUILD_EVENTS" | head -n1)
+[[ -n "$THREAD_ID" && "$THREAD_ID" != null && -s "$BUILD_REPORT" ]] || { printf 'Codex did not return a thread ID and report.\n' >&2; exit 1; }
 ```
 
 - Prompt goes via stdin (`- <"$P"`) — this both avoids quoting bugs AND sidesteps the non-TTY stdin hang (`codex exec` blocks forever waiting on stdin EOF under Claude Code's Bash tool; feeding the file gives immediate EOF).
-- Parse `thread_id` from the `{"type":"thread.started","thread_id":"..."}` line → `THREAD_ID`. Codex's final report lands in `/tmp/codex-build.txt` — read that file; don't parse the JSONL stream for content.
-- `2>/dev/null` suppresses cosmetic MCP/auth stderr noise. Confirm success by the report file + a `thread.started` line; neither → failed run (auth/model) — stop and tell the user.
+- Parse `thread_id` from `$BUILD_EVENTS` → `THREAD_ID`. Codex's final report lands in `$BUILD_REPORT` — read that file; do not parse the JSONL stream for content.
+- Confirm success by the report file + a `thread.started` line; neither means a failed run (auth/model) — stop and tell the user. Keep private diagnostics in `$BUILD_STDERR`.
 - **Timing:** foreground with `timeout: 600000` on the Bash tool call (default 2-min tool timeout kills real builds). If the spec is clearly >10 min of work (multi-file feature, migration, anything with image generation), launch with `run_in_background: true` instead and read the `-o` file when it exits. Don't kill a quiet background run early — Codex builds are legitimately slow.
 - **Heads-up on completion (required):** when a background Codex run finishes, the FIRST line of your next message to the user must be a loud standalone banner — `🔔 CODEX FINISHED — <what> (exit ok/fail) — verifying now` — BEFORE any verification output. The user is not watching tool calls; never let a completed build slide silently into the verify phase.
 
@@ -84,8 +95,13 @@ Problems found → resume the SAME session (Codex keeps its context; cheaper and
 ```bash
 # resume has no --yolo and no -C: run from the repo dir and spell the long flag,
 # or Codex inherits config.toml's sandbox (possibly read-only) and can't write.
-codex exec resume "$THREAD_ID" --dangerously-bypass-approvals-and-sandbox --json \
-  -o /tmp/codex-build.txt - <"$P2" 2>/dev/null >/dev/null
+if ! timeout 600 codex exec resume "$THREAD_ID" --dangerously-bypass-approvals-and-sandbox --json \
+  -o "$BUILD_REPORT" - <"$P2" >"$BUILD_EVENTS" 2>"$BUILD_STDERR"
+then
+  printf 'Codex build resume failed; inspect %s and %s.\n' "$BUILD_EVENTS" "$BUILD_STDERR" >&2
+  exit 1
+fi
+[[ -s "$BUILD_REPORT" ]] || { printf 'Codex resume returned no report.\n' >&2; exit 1; }
 ```
 
 Re-verify (Step 3) after each round. After `MAX_FIX_ROUNDS` failed rounds: STOP delegating — Claude takes over and finishes the remaining fixes directly. Log the takeover. Ping-ponging trivia through delegation burns more than it saves.
