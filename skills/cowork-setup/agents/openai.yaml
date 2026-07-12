@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cowork: Setup"
+  short_description: "Verify Cowork prerequisites."
+  default_prompt: "Check whether Cowork is ready in this environment."

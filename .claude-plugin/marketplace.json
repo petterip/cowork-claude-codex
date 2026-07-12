@@ -1,0 +1,21 @@
+{
+  "name": "cowork-claude-codex",
+  "owner": {
+    "name": "Petteri Ponsimaa"
+  },
+  "metadata": {
+    "description": "Durable cross-model collaboration workflows for Claude Code and Codex.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "cowork",
+      "description": "Plan, review, build, and hand off work across Claude Code and Codex.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Petteri Ponsimaa"
+      },
+      "source": "./plugins/cowork"
+    }
+  ]
+}

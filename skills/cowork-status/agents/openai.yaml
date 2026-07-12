@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cowork: Status"
+  short_description: "Show active and recent Cowork jobs."
+  default_prompt: "Show the status and next action for current Cowork jobs."

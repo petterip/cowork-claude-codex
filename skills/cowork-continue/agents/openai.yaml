@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cowork: Continue"
+  short_description: "Continue the current task in Claude."
+  default_prompt: "Continue this task in Claude with the current decisions and remaining work."

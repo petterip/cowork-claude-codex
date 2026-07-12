@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cowork: Build"
+  short_description: "Let Claude build while Codex verifies."
+  default_prompt: "Build the approved plan with Claude and independently verify the result."

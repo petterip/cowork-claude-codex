@@ -1,5 +1,8 @@
 # Developer Experience Review
 
+> Historical review captured on 2026-07-11. Its recommendations are retained
+> as design history and may already be implemented.
+
 Reviewed 2026-07-11 from two perspectives: an open-source maintainer trying to
 install, update, test, and support the projects, and a daily Claude Code/Codex
 user trying to choose the right workflow quickly. This is a design review, not

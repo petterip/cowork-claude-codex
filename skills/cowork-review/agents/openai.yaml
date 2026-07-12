@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cowork: Review"
+  short_description: "Ask Claude to review current Codex work."
+  default_prompt: "Ask Claude to independently review the current work without editing it."

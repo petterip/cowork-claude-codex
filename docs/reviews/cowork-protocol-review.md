@@ -1,5 +1,8 @@
 # Cross-model rally protocol review
 
+> Historical review of commit `f2cada1`. Findings below describe that commit,
+> not the current release.
+
 **Scope.** Staff-engineering review of the current `main` implementation at
 `f2cada1`: the Codex-to-Claude rally, the Claude-to-Codex skills, installation,
 and their executable verification. This is a protocol/reliability review, not a

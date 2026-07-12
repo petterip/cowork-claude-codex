@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cowork: Plan"
+  short_description: "Plan with an independent Claude challenge."
+  default_prompt: "Plan this work and have Claude challenge the result before implementation."
