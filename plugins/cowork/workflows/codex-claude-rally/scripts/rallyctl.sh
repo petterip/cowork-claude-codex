@@ -7,6 +7,9 @@ fail() {
   exit 1
 }
 
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+request_validator="$script_dir/validate-rally-request.sh"
+
 [[ $# -ge 1 ]] || fail 'usage: rallyctl.sh <bind-worker|record-worker|transition> ...'
 command=$1
 shift
@@ -75,10 +78,22 @@ record_worker() {
 }
 
 record_worker_locked() {
-  local job_dir=$1 worker_id=$2 session_id=$3 worker_cwd=$4 manifest content mode bound_worker
+  local job_dir=$1 worker_id=$2 session_id=$3 worker_cwd=$4 manifest content mode bound_worker existing_worker existing_session existing_cwd
   manifest=$(manifest_for "$job_dir")
   [[ "$(jq -r '.state' "$manifest")" == RUNNING ]] || fail 'worker metadata may only be recorded while RUNNING.'
-  [[ "$(jq -r '.claude_worker_id' "$manifest")" == null ]] || fail 'worker metadata is already recorded.'
+  existing_worker=$(jq -r '.claude_worker_id' "$manifest")
+  existing_session=$(jq -r '.claude_session_id' "$manifest")
+  existing_cwd=$(jq -r '.worker_cwd' "$manifest")
+  if [[ "$existing_worker" != null ]]; then
+    [[ "$existing_worker" == "$worker_id" && "$existing_cwd" == "$worker_cwd" ]] || fail 'worker metadata conflicts with the recorded worker identity or CWD.'
+    if [[ "$existing_session" == null && "$session_id" != null ]]; then
+      content=$(jq --arg session_id "$session_id" '.claude_session_id = $session_id' "$manifest")
+      write_manifest "$manifest" "$content"
+      return
+    fi
+    [[ "$existing_session" == "$session_id" || "$existing_session" == null && "$session_id" == null ]] || fail 'worker session ID conflicts with the recorded session.'
+    return
+  fi
   mode=$(jq -r '.mode' "$manifest")
   bound_worker=$(jq -r '.worker_cwd' "$manifest")
   if [[ "$mode" == write ]]; then
@@ -116,6 +131,7 @@ transition_locked() {
   review="$job_dir/reviews/$round.md"
   if [[ "$state:$next" == CREATED:RUNNING ]]; then
     [[ -f "$request" && ! -L "$request" ]] || fail "missing immutable request: requests/$round.md"
+    "$request_validator" "$request" || fail "request is incomplete: requests/$round.md"
     request_digest=$(sha256sum "$request" | awk '{print $1}')
   fi
   if [[ "$state:$next" == RUNNING:WAITING_FOR_CODEX ]]; then
@@ -132,6 +148,7 @@ transition_locked() {
     (( followup_count < 2 )) || fail 'follow-up round limit reached; require human review.'
     next_round=$(printf '%03d' "$((10#$round + 1))")
     [[ -f "$job_dir/requests/$next_round.md" && ! -L "$job_dir/requests/$next_round.md" ]] || fail "missing immutable follow-up request: requests/$next_round.md"
+    "$request_validator" "$job_dir/requests/$next_round.md" || fail "follow-up request is incomplete: requests/$next_round.md"
     request_digest=$(sha256sum "$job_dir/requests/$next_round.md" | awk '{print $1}')
   fi
   if [[ "$state:$next" == VERIFYING:ACCEPTED || "$state:$next" == VERIFYING:REJECTED ]]; then

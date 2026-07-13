@@ -7,7 +7,7 @@ fail() {
   exit 1
 }
 
-[[ $# -ge 2 ]] || fail 'usage: create-rally-job.sh <job-id> <read-only|write> [--allowed-path <relative-path>]... [--proof-command <command>]'
+[[ $# -ge 2 ]] || fail 'usage: create-rally-job.sh <job-id> <read-only|write> --repo <absolute-git-root> [--allowed-path <relative-path>]... [--proof-command <command>]'
 job_id=$1
 mode=$2
 shift 2
@@ -16,8 +16,15 @@ shift 2
 
 allowed_paths=()
 proof_command=''
+repository_arg=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --repo)
+      [[ $# -ge 2 && -z "$repository_arg" ]] || fail '--repo requires one absolute Git repository root and may be supplied once.'
+      [[ "$2" == /* && "$2" != *$'\n'* ]] || fail '--repo must be an absolute path.'
+      repository_arg=$2
+      shift 2
+      ;;
     --allowed-path)
       [[ $# -ge 2 ]] || fail '--allowed-path requires a relative path.'
       [[ "$2" != /* && "$2" != '.' && "$2" != *'..'* && "$2" != *$'\n'* ]] || fail 'allowed paths must be normalized, non-root relative paths.'
@@ -34,6 +41,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+[[ -n "$repository_arg" ]] || fail '--repo is required; pass the target repository root explicitly.'
 if [[ "$mode" == write && ${#allowed_paths[@]} -eq 0 ]]; then
   fail 'write jobs require at least one --allowed-path.'
 fi
@@ -41,8 +49,12 @@ if [[ "$mode" == write && -z "$proof_command" ]]; then
   fail 'write jobs require --proof-command; use "none" only when no proof is applicable.'
 fi
 
-repository_path=$(git rev-parse --show-toplevel) || fail 'run from a Git repository.'
-base_commit=$(git rev-parse HEAD)
+[[ -d "$repository_arg" && ! -L "$repository_arg" ]] || fail '--repo must name a real directory, not a symlink.'
+repository_arg=$(cd "$repository_arg" && pwd -P)
+repository_path=$(git -C "$repository_arg" rev-parse --show-toplevel 2>/dev/null) || fail '--repo is not a Git repository.'
+repository_path=$(cd "$repository_path" && pwd -P)
+[[ "$repository_arg" == "$repository_path" ]] || fail '--repo must be the Git repository root, not a subdirectory.'
+base_commit=$(git -C "$repository_path" rev-parse HEAD)
 state_root=${XDG_STATE_HOME:-"$HOME/.local/state"}
 job_dir="$state_root/cowork-claude-codex/jobs/$job_id"
 [[ ! -e "$job_dir" ]] || fail "job already exists: $job_dir"
@@ -75,23 +87,19 @@ printf '# Rally job: %s\n\nState: CREATED\nOwner: Codex\nRound: 001\n' "$job_id"
 jq -nc --arg at "$created_at" --arg job_id "$job_id" \
   '{at: $at, actor: "codex", state: "CREATED", artifact: "manifest.json", exit_status: 0, job_id: $job_id}' \
   > "$job_dir/events.ndjson"
-printf '%s\n' \
-  '# Claude work request' \
-  '' \
-  '## Task' \
-  '<bounded outcome>' \
-  '' \
-  '## Mode and allowed paths' \
-  '<read-only or write; exact relative paths>' \
-  '' \
-  '## Source of truth' \
-  '<files, plan, issue, or URL references>' \
-  '' \
-  '## Proof command' \
-  '<exact command or none>' \
-  '' \
-  '## Non-goals' \
-  '<explicit bounds>' \
-  > "$job_dir/requests/001.md"
+{
+  printf '%s\n' '# Claude work request' '' '## Task' '<bounded outcome>' ''
+  printf '## Mode and allowed paths\nMode: %s\n' "$mode"
+  if [[ ${#allowed_paths[@]} -eq 0 ]]; then
+    printf '%s\n' 'Allowed paths: none declared'
+  else
+    printf '%s\n' 'Allowed paths:'
+    printf -- '- %s\n' "${allowed_paths[@]}"
+  fi
+  printf '%s\n' '' '## Source of truth' '<files, plan, issue, or URL references>' ''
+  printf '## Proof command\n%s\n' "${proof_command:-none}"
+  printf '%s\n' '' '## Non-goals' '<explicit bounds>'
+} > "$job_dir/requests/001.md"
 
 printf '%s\n' "$job_dir"
+printf 'Rally repository: %s\nRally base commit: %s\n' "$repository_path" "$base_commit" >&2

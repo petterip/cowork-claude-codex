@@ -7,6 +7,9 @@ fail() {
   exit 1
 }
 
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+request_validator="$script_dir/validate-rally-request.sh"
+
 [[ $# -eq 1 ]] || fail 'usage: validate-rally-job.sh <job-directory>'
 job_dir=$1
 [[ -d "$job_dir" && ! -L "$job_dir" ]] || fail 'job directory must be a real directory, not a symlink.'
@@ -29,15 +32,21 @@ jq -e '
 
 repository_path=$(jq -r '.repository_path' "$manifest")
 base_commit=$(jq -r '.base_commit' "$manifest")
+[[ -d "$repository_path" && ! -L "$repository_path" ]] || fail 'repository path must be a real directory, not a symlink.'
+repository_root=$(git -C "$repository_path" rev-parse --show-toplevel 2>/dev/null) || fail 'repository path is not a Git repository.'
+repository_root=$(cd "$repository_root" && pwd -P)
+[[ "$repository_root" == "$repository_path" ]] || fail 'repository path is not the Git repository root.'
 git -C "$repository_path" rev-parse --verify "$base_commit^{commit}" >/dev/null || fail 'base commit is unavailable.'
 state=$(jq -r '.state' "$manifest")
 mode=$(jq -r '.mode' "$manifest")
 round=$(printf '%03d' "$(jq -r '.round' "$manifest")")
-if [[ "$state" != CREATED ]]; then
+recorded_request_digest=$(jq -r --arg round "$round" '.artifact_digests.requests[$round] // empty' "$manifest")
+if [[ "$state" != CREATED && "$state" != STOPPED || -n "$recorded_request_digest" ]]; then
   request="$job_dir/requests/$round.md"
   [[ -f "$request" && ! -L "$request" ]] || fail "immutable request is missing: requests/$round.md"
+  "$request_validator" "$request" || fail "immutable request is incomplete: requests/$round.md"
   request_digest=$(sha256sum "$request" | awk '{print $1}')
-  [[ "$(jq -r --arg round "$round" '.artifact_digests.requests[$round] // empty' "$manifest")" == "$request_digest" ]] || fail 'request digest changed after launch.'
+  [[ "$recorded_request_digest" == "$request_digest" ]] || fail 'request digest changed after launch.'
 fi
 if [[ "$mode" == write && "$state" != CREATED ]]; then
   worker_cwd=$(jq -r '.worker_cwd' "$manifest")

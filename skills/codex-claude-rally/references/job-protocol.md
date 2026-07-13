@@ -26,6 +26,12 @@ Never use an in-checkout mailbox for a write job. Claude Code can isolate a back
 - `allowed_paths`, `proof_command`, and `created_at`
 - immutable request, response, and review SHA-256 digests by round
 
+`repository_path` is always an explicitly supplied, canonical Git worktree
+root. Job creation must not derive it from the skill script's current working
+directory. For read-only jobs, `allowed_paths` are review targets and the
+request may declare additional readable source-of-truth files. For write jobs,
+`allowed_paths` are the strict mutation allowlist.
+
 Only the owner of the current state changes the manifest through `scripts/rallyctl.sh`; it locks the job and atomically updates `manifest.json`, `state.md`, and `events.ndjson`. Keep `state.md` as a concise human-readable projection.
 
 ## States
@@ -45,6 +51,8 @@ Any active state → STOPPED | REJECTED
 - `ACCEPTED`, `REJECTED`, `STOPPED`: terminal states.
 
 Count a follow-up only when `VERIFYING` returns to `RUNNING`. Cap it at two.
+`CREATED -> RUNNING` and every follow-up launch validate that all request
+sections contain real content and no template placeholders remain.
 
 ## Artifact rules
 
@@ -53,6 +61,9 @@ Count a follow-up only when `VERIFYING` returns to `RUNNING`. Cap it at two.
 - `rallyctl` records the request digest when launching, the response digest when entering `WAITING_FOR_CODEX`, and the independent review digest when accepting or rejecting. It rejects a changed artifact before the next ownership transition.
 - `events.ndjson` is append-only and contains only timestamp, actor, state, artifact path, and exit status.
 - Link to durable source artifacts instead of copying large source text.
+- Worker metadata is immutable except that a `null` Claude session ID may be
+  filled later when the recorded worker ID and CWD match exactly. Re-recording
+  identical metadata is idempotent; conflicting metadata fails closed.
 
 ## Write-job hand-back
 

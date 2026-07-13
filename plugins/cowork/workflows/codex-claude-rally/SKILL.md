@@ -30,21 +30,38 @@ Before launching a job, run `scripts/verify-environment.sh`.
 
 ## Create a job
 
-From the target repository root, create an external job directory. It must be outside the checkout because Claude background write sessions may move into an isolated worktree.
+Resolve the target repository root before changing directories or invoking any
+skill script. Pass it explicitly to job creation; `create-rally-job.sh` refuses
+to infer a repository from its own process CWD. It also prints the recorded
+repository and base commit to stderr for immediate verification. The external
+job directory remains outside the checkout because Claude background write
+sessions may move into an isolated worktree.
 
 ```bash
 JOB_ID=<short-id>
-scripts/create-rally-job.sh "$JOB_ID" read-only --allowed-path docs --proof-command 'none'
+TARGET_REPO=$(git rev-parse --show-toplevel)
+scripts/create-rally-job.sh "$JOB_ID" read-only --repo "$TARGET_REPO" \
+  --allowed-path docs --proof-command 'none'
 # Use `write` only when Claude is the sole writer for the requested paths.
 RALLY_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cowork-claude-codex/jobs/$JOB_ID"
 ```
 
-Replace the placeholders in `$RALLY_DIR/requests/001.md`. Include the task, mode, exact allowed paths, source-of-truth references, proof command, non-goals, and the absolute `$RALLY_DIR` path. Keep the request bounded; link to long artifacts rather than copying them.
+Replace the remaining placeholders in `$RALLY_DIR/requests/001.md`. Job creation
+prefills mode, allowed paths, and proof command from the manifest; verify them
+rather than copying them again. Add the task, source-of-truth references,
+non-goals, and the absolute `$RALLY_DIR` path. Keep the request bounded; link to
+long artifacts rather than copying them.
+
+For read-only jobs, `allowed_paths` identify review targets; Claude may read the
+request's declared source-of-truth files to verify findings. For write jobs,
+they are the strict mutation allowlist. `rallyctl` refuses to launch an
+unresolved request template.
 
 For a write job, require every allowed path and the proof command at creation, then bind the actual isolated worker worktree before moving the job to `RUNNING`:
 
 ```bash
-scripts/create-rally-job.sh "$JOB_ID" write --allowed-path src/feature --proof-command 'pnpm test -- feature'
+scripts/create-rally-job.sh "$JOB_ID" write --repo "$TARGET_REPO" \
+  --allowed-path src/feature --proof-command 'pnpm test -- feature'
 scripts/rallyctl.sh bind-worker "$RALLY_DIR" /absolute/worker-worktree
 scripts/rallyctl.sh transition "$RALLY_DIR" CREATED RUNNING codex
 ```
@@ -60,12 +77,20 @@ Run the gate, then pass Claude the immutable request and the absolute artifact d
 ACCESS_ARGS=()
 if [[ "$(scripts/detect-full-access.sh)" == full ]]; then ACCESS_ARGS=(--dangerously-skip-permissions); fi
 claude --bg "${ACCESS_ARGS[@]}" --name "codex-$JOB_ID" \
-  "Read $RALLY_DIR/requests/001.md. Work only within its allowed paths. Publish the result atomically to $RALLY_DIR/responses/001.md, append state events to $RALLY_DIR/events.ndjson, and end the response with READY_FOR_CODEX, NEEDS_CODEX, or WAITING_FOR_HUMAN." \
+  "Read $RALLY_DIR/requests/001.md. Respect its mode and scope: never edit in read-only mode; in write mode modify only allowed paths. You may read declared source-of-truth files. Publish the result atomically to $RALLY_DIR/responses/001.md, append state events to $RALLY_DIR/events.ndjson, and end the response with READY_FOR_CODEX, NEEDS_CODEX, or WAITING_FOR_HUMAN." \
   | tee "$RALLY_DIR/claude-launch-001.txt"
 claude agents --cwd "$PWD" --all --json
 ```
 
-Record the launch-printed worker ID, available Claude session ID, and actual worker CWD atomically: `scripts/rallyctl.sh record-worker "$RALLY_DIR" <worker-id> <session-id-or-null> "$PWD"`. Record the Codex thread ID when one exists. If the installed Claude version does not support a background resume, use its documented `logs`, `attach`, `stop`, or respawn workflow; do not scrape terminal output.
+Read the worker and session IDs from `claude agents --cwd "$TARGET_REPO" --all
+--json`, then record them with the actual worker CWD:
+`scripts/rallyctl.sh record-worker "$RALLY_DIR" <worker-id>
+<session-id-or-null> <worker-cwd>`. If Claude initially exposes only the worker
+ID, record `null`; the same command may later fill the session ID only when the
+worker ID and CWD still match. Record the Codex thread ID when one exists. If
+the installed Claude version does not support a background resume, use its
+documented `logs`, `attach`, `stop`, or respawn workflow; do not scrape terminal
+output.
 
 ## Verify and continue
 
